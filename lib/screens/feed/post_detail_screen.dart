@@ -24,7 +24,8 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _likesCount = widget.post['likes_count'] ?? 0;
+    final rawCount = widget.post['likes_count'] ?? 0;
+    _likesCount = (rawCount is int && rawCount < 0) ? 0 : (rawCount as int? ?? 0);
     _fetchComments();
     _checkIfLiked();
   }
@@ -48,6 +49,8 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
 
     setState(() => _isProcessingLike = true);
 
+    final currentCount = _likesCount < 0 ? 0 : _likesCount;
+
     try {
       final existing = await supabase
           .from('likes')
@@ -62,22 +65,25 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             .delete()
             .eq('user_id', user.id)
             .eq('post_id', widget.post['id']);
+        final newCount = currentCount > 0 ? currentCount - 1 : 0;
         await supabase
             .from('posts')
-            .update({'likes_count': _likesCount - 1}).eq('id', widget.post['id']);
-        if (mounted) setState(() { _isLiked = false; _likesCount--; });
+            .update({'likes_count': newCount}).eq('id', widget.post['id']);
+        if (mounted) setState(() { _isLiked = false; _likesCount = newCount; });
       } else {
         await supabase.from('likes').insert({
           'user_id': user.id,
           'post_id': widget.post['id'],
         });
+        final newCount = currentCount + 1;
         await supabase
             .from('posts')
-            .update({'likes_count': _likesCount + 1}).eq('id', widget.post['id']);
-        if (mounted) setState(() { _isLiked = true; _likesCount++; });
+            .update({'likes_count': newCount}).eq('id', widget.post['id']);
+        if (mounted) setState(() { _isLiked = true; _likesCount = newCount; });
       }
     } catch (e) {
-      if (mounted) setState(() { _isLiked = true; });
+      // Revert state on error
+      if (mounted) setState(() { _likesCount = currentCount; });
     } finally {
       if (mounted) setState(() => _isProcessingLike = false);
     }

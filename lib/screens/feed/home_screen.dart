@@ -94,6 +94,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _isFetchingMore = true);
 
     try {
+      final user = supabase.auth.currentUser;
       final nextPage = _currentPage + 1;
       final from = nextPage * _pageSize;
       final to = from + _pageSize - 1;
@@ -104,8 +105,22 @@ class _HomeScreenState extends State<HomeScreen> {
           .order('created_at', ascending: false)
           .range(from, to);
 
+      final newPosts = List<Map<String, dynamic>>.from(response);
+
+      if (user != null && newPosts.isNotEmpty) {
+        final newPostIds = newPosts.map((p) => p['id'].toString()).toList();
+        final likes = await supabase
+            .from('likes')
+            .select('post_id')
+            .eq('user_id', user.id)
+            .inFilter('post_id', newPostIds);
+        final newLikedIds = Set<String>.from(
+            (likes as List).map((l) => l['post_id'].toString()));
+        _likedPostIds.addAll(newLikedIds);
+      }
+
       setState(() {
-        _posts.addAll(List<Map<String, dynamic>>.from(response));
+        _posts.addAll(newPosts);
         _currentPage = nextPage;
         _hasMore = response.length == _pageSize;
         _isFetchingMore = false;
@@ -123,25 +138,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final isLiked = _likedPostIds.contains(postId);
     final idx = _posts.indexWhere((p) => p['id'].toString() == postId);
+    if (idx == -1) {
+      setState(() => _processingLikes.remove(postId));
+      return;
+    }
+
+    final currentLikes = (_posts[idx]['likes_count'] as int?) ?? 0;
+    final int newLikes = isLiked
+        ? (currentLikes > 0 ? currentLikes - 1 : 0)
+        : (currentLikes < 0 ? 0 : currentLikes) + 1;
 
     setState(() {
       if (isLiked) {
         _likedPostIds.remove(postId);
-        if (idx != -1) {
-          _posts[idx] = {
-            ..._posts[idx],
-            'likes_count': (_posts[idx]['likes_count'] ?? 1) - 1,
-          };
-        }
       } else {
         _likedPostIds.add(postId);
-        if (idx != -1) {
-          _posts[idx] = {
-            ..._posts[idx],
-            'likes_count': (_posts[idx]['likes_count'] ?? 0) + 1,
-          };
-        }
       }
+      _posts[idx] = {
+        ..._posts[idx],
+        'likes_count': newLikes,
+      };
     });
 
     try {
@@ -151,18 +167,15 @@ class _HomeScreenState extends State<HomeScreen> {
             .delete()
             .eq('user_id', user.id)
             .eq('post_id', postId);
-        await supabase.from('posts').update({
-          'likes_count': _posts[idx]['likes_count']
-        }).eq('id', postId);
       } else {
         await supabase.from('likes').insert({
           'user_id': user.id,
           'post_id': postId,
         });
-        await supabase.from('posts').update({
-          'likes_count': _posts[idx]['likes_count']
-        }).eq('id', postId);
       }
+      await supabase.from('posts').update({
+        'likes_count': newLikes,
+      }).eq('id', postId);
     } catch (e) {
       // Revert on failure
       setState(() {
@@ -171,6 +184,10 @@ class _HomeScreenState extends State<HomeScreen> {
         } else {
           _likedPostIds.remove(postId);
         }
+        _posts[idx] = {
+          ..._posts[idx],
+          'likes_count': currentLikes,
+        };
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
